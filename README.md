@@ -34,10 +34,11 @@ On a phone, touch and drag to fly. Swing and shoot auto-target the nearest enemy
 
 After a three-second countdown, the page's smaller elements come to life:
 
-- **Difficulty:** Easy brings up to 10 elements and Medium (the default) up to 30. Hard turns every element on screen against you, including text, icons and the insides of web components. It fights in as many at once as your device can run smoothly and sends in fresh ones as you destroy them, until nothing is left.
+- **Difficulty:** Easy brings up to 10 elements and Medium (the default) up to 30. Hard turns every element on screen against you. It sends in as many at once as your device can run smoothly, and fresh ones replace them as you destroy them, until nothing is left.
 - **Melee:** about one in ten elements, and at least two, rush straight at you.
 - **Shooters:** the rest spread out across your half of the screen and shoot. Each has one attack: a fast burst of three, a single heavy shot, or a laser with a warning line. A shooter flashes a tint just before it fires, and every so often one dives straight at you. Shooters take turns firing, so busy pages stay beatable without anyone going quiet.
 - **Boss:** the biggest element on the page is always a boss, with one of three attacks: bullets in six directions, lasers in four directions, or straight bursts aimed where you're about to be.
+- **Grouping:** text and icons never fight alone. They come at you as part of the row, card or post they sit in, so a whole sidebar row or social media post flies off the page as one enemy.
 - **Aim:** every enemy moves slower than you. Some aim straight at you and others aim where you're about to be.
 
 Destroyed elements sometimes drop a power-up: a heart for health, a lightning bolt for speed or a sword for damage. Clear every element to conquer the site. The popup counts the sites you've conquered and expands into a list showing the hardest difficulty you beat each one on.

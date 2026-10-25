@@ -303,7 +303,7 @@ font: 12px/1.45 Tahoma, Verdana, sans-serif; color: #111; background: #fff; bord
   let paused = false;
   let enemies = [], bullets = [], powerups = [], particles = [], floaters = [];
   let spawnQueue = [], spawnTimer = 0, waveInfo = null, countdown = 0, firstHalf = [];
-  let reserve = [], rescans = 0, rescanT = 0;
+  let reserve = [], rescans = 0, rescanT = 0, holdT = 0;
   const MAX_RESCANS = 12;
   let shake = 0, flashRed = 0, flashes = [], rings = [], hitStop = 0, whiteFlash = 0, fxT = 0;
   let idleHintT = 0;
@@ -551,55 +551,68 @@ font: 12px/1.45 Tahoma, Verdana, sans-serif; color: #111; background: #fff; bord
     return false;
   }
 
-  const ENEMY_SEL = CONTROL_SEL + ',' + MEDIA_SEL + ',' + BOX_SEL;
 
   function detectEnemyElements() {
     const vw = window.innerWidth, vh = window.innerHeight, area = vw * vh;
-    let cands = [];
-    for (const el of deepElements()) {
-      if (cands.length > 4000) break;
-      if (SKIP_TAGS.has(el.localName) && !el.matches('iframe, canvas, video')) continue;
-      const r = el.getBoundingClientRect();
-      if (r.width < 8 || r.height < 10) continue;
-      if (r.left < -2 || r.top < -2 || r.right > vw + 2 || r.bottom > vh + 2) continue;
-      const text = hasOwnText(el);
-      if (!text && (r.width < 16 || r.height < 12)) continue;
-      const wide = r.width > vw / 3 && !isSearchBar(el) && !(text && r.width < vw * 0.7 && r.height < 90);
-      if (r.width * r.height > area * 0.06 || r.height > vh / 4 || wide) continue;
-      const known = el.matches(ENEMY_SEL);
-      if (!known && !text && !el.shadowRoot) continue;
-      const cs = getComputedStyle(el);
-      if (cs.visibility !== 'visible' || parseFloat(cs.opacity) < 0.1 || cs.display === 'none' || cs.display === 'contents') continue;
-      const isControl = known && el.matches(CONTROL_SEL);
-      const isLink = el.tagName === 'A' && (el.textContent.trim() || el.querySelector('img, svg'));
-      const isMedia = el.matches('img, svg, picture');
-      if (el.matches('iframe, video, canvas, embed, object')) continue;
-      if (!isControl && !isLink && !isMedia && !text && !looksLikeBox(cs)) continue;
-      if (el.getElementsByTagName('*').length > 150 || el.querySelector('iframe, video, canvas')) continue;
-      cands.push({ el, r });
-    }
-    cands.sort((a, b) => b.r.width * b.r.height - a.r.width * a.r.height);
-    const set = new Set(cands.map(c => c.el)), desc = new Map();
-    for (const c of cands) {
-      for (let p = upEl(c.el); p; p = upEl(p)) {
-        if (!set.has(p)) continue;
-        desc.set(p, (desc.get(p) || 0) + 1);
+    const rects = new Map(), lists = new Map();
+    const rectOf = el => { let r = rects.get(el); if (!r) { r = el.getBoundingClientRect(); rects.set(el, r); } return r; };
+    const inView = r => r.left >= -2 && r.top >= -2 && r.right <= vw + 2 && r.bottom <= vh + 2;
+    const RICH = 'img, svg, picture, button, input, select, textarea, [role="button"]';
+    function isList(p) {
+      if (lists.has(p)) return lists.get(p);
+      const kids = p.shadowRoot ? renderedChildren(p).filter(n => n.nodeType === 1) : [...p.children];
+      const seen = new Map();
+      let list = false;
+      for (const k of kids) {
+        const r = rectOf(k);
+        if (r.width < 40 || r.height < 18 || r.width * r.height < 1200) continue;
+        const sig = k.localName + '|' + (k.getAttribute('class') || '');
+        const n = (seen.get(sig) || 0) + 1;
+        seen.set(sig, n);
+        if (n >= 2) { list = true; break; }
       }
+      lists.set(p, list);
+      return list;
     }
-    const keep = [], kept = new Set();
-    for (const c of cands) {
-      let covered = false;
-      for (let p = upEl(c.el); p && !covered; p = upEl(p)) covered = kept.has(p);
-      if (covered || (desc.get(c.el) || 0) > 3) continue;
-      kept.add(c.el);
-      keep.push(c);
+    function unitOf(leaf) {
+      let cur = leaf;
+      for (let p = upEl(cur); p && p !== document.body && p !== document.documentElement; p = upEl(p)) {
+        const r = rectOf(p);
+        if (!inView(r) || r.width * r.height > area * 0.12 || r.height > vh * 0.34 || (r.width > vw * 0.62 && !isSearchBar(p))) break;
+        if (isList(p) || p.querySelector('iframe, video, canvas, embed, object') || p.getElementsByTagName('*').length > 300) break;
+        const cs = getComputedStyle(p);
+        if (cs.position === 'fixed' && r.width * r.height > area * 0.06) break;
+        cur = p;
+      }
+      return cur;
     }
+    const units = new Map();
+    let leaves = 0;
+    for (const el of deepElements()) {
+      if (leaves > 5000) break;
+      if (SKIP_TAGS.has(el.localName) || el.matches('video, canvas, embed, object')) continue;
+      if (el.namespaceURI === SVG_NS && el.localName !== 'svg') continue;
+      const media = el.matches('img, svg, picture');
+      const control = !media && el.matches(CONTROL_SEL);
+      const text = !media && hasOwnText(el);
+      if (!media && !control && !text && el.childElementCount) continue;
+      const r = rectOf(el);
+      if (r.width < 8 || r.height < 8 || !inView(r)) continue;
+      const cs = getComputedStyle(el);
+      if (cs.visibility !== 'visible' || parseFloat(cs.opacity) < 0.1 || cs.display === 'none') continue;
+      if (!media && !control && !text && (r.width < 16 || r.height < 12 || !looksLikeBox(cs))) continue;
+      leaves++;
+      const u = unitOf(el);
+      if (!units.has(u)) units.set(u, rectOf(u));
+    }
+    const cands = [...units].map(([el, r]) => ({ el, r })).sort((a, b) => b.r.width * b.r.height - a.r.width * a.r.height);
     const out = [], outSet = new Set(), anc = new Set();
     const clash = el => { if (anc.has(el)) return true; for (let p = el; p; p = upEl(p)) if (outSet.has(p)) return true; return false; };
-    for (const c of keep) {
-      let el = promoteToBox(c.el, c.r, vw, vh);
-      if (clash(el)) el = c.el;
+    for (const { el, r } of cands) {
+      if (r.width * r.height > area * 0.12 && !isSearchBar(el)) continue;
       if (clash(el)) continue;
+      const rich = el.matches(RICH) || el.querySelector(RICH) || (el.shadowRoot && el.shadowRoot.querySelector(RICH)) || looksLikeBox(getComputedStyle(el));
+      if (!rich && (r.height < 30 || r.width * r.height < 5000)) continue;
       out.push(el);
       outSet.add(el);
       for (let p = upEl(el); p; p = upEl(p)) anc.add(p);
@@ -709,7 +722,7 @@ font: 12px/1.45 Tahoma, Verdana, sans-serif; color: #111; background: #fff; bord
     const r = el.getBoundingClientRect();
     let c;
     try {
-      c = cloneTree(el, { n: 200 });
+      c = cloneTree(el, { n: 400 });
     } catch {}
     if (!c || c.nodeType !== 1) {
       c = document.createElement('div');
@@ -753,10 +766,10 @@ font: 12px/1.45 Tahoma, Verdana, sans-serif; color: #111; background: #fff; bord
     e.clone.style.setProperty('transform', `translate(${Math.round(dx)}px, ${Math.round(dy)}px)`);
   }
 
-  function prepareClones() {
+  function prepareClones(budget) {
     for (const sp of firstHalf) {
       if (sp.clone || !sp.el.isConnected) continue;
-      if (performance.now() - frameStart > 3) return;
+      if (performance.now() - frameStart > budget) return;
       sp.clone = makeClone(sp.el);
       sp.clone.style.setProperty('visibility', 'hidden');
     }
@@ -1009,6 +1022,7 @@ font: 12px/1.45 Tahoma, Verdana, sans-serif; color: #111; background: #fff; bord
       reserve = specs.slice(DIFF_MAX[difficulty]);
       rescans = difficulty === 'hard' ? 0 : MAX_RESCANS;
       rescanT = 0;
+      holdT = 0;
       spawnQueue = [];
       countdown = 3;
       fireTokens = 1;
@@ -1112,7 +1126,7 @@ font: 12px/1.45 Tahoma, Verdana, sans-serif; color: #111; background: #fff; bord
   function reinforce(dt) {
     const cap = DIFF_MAX[difficulty];
     let alive = enemies.filter(e => !e.dead).length;
-    for (let n = 0; n < 2 && reserve.length && alive < cap; n++, alive++) {
+    for (let n = 0; n < 6 && reserve.length && alive < cap; n++, alive++) {
       const sp = reserve.shift();
       if (!sp.el.isConnected || moved.has(sp.el)) { n--; alive--; continue; }
       spawn({ ...sp, quiet: true });
@@ -1371,9 +1385,10 @@ font: 12px/1.45 Tahoma, Verdana, sans-serif; color: #111; background: #fff; bord
 
     if (state === 'wave') {
       if (countdown > 0) {
-        if (mode === 'elements') prepareClones();
+        if (mode === 'elements') prepareClones(countdown < 0.6 ? 14 : 4);
         const before = Math.ceil(countdown);
         countdown -= dt;
+        if (countdown <= 0 && mode === 'elements' && holdT < 2.5 && firstHalf.some(sp => !sp.clone && sp.el.isConnected)) { holdT += dt; countdown = 0.001; }
         if (countdown <= 0) {
           countdown = 0;
           if (mode === 'elements') firstHalf.forEach(sp => { sp.r = sp.el.getBoundingClientRect(); });
@@ -2523,7 +2538,7 @@ font: 12px/1.45 Tahoma, Verdana, sans-serif; color: #111; background: #fff; bord
         let bossEl = null;
         bossEl = els.reduce((a, b) => { const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect(); return rb.width * rb.height > ra.width * ra.height ? b : a; });
         const rest = els.filter(el => el !== bossEl);
-        const melee = Math.min(Math.max(2, Math.round(rest.length * 0.1)), rest.length >= 3 ? rest.length - 1 : rest.length);
+        const melee = Math.min(Math.max(2, Math.round(rest.length * 0.1)), rest.length >= 2 ? rest.length - 1 : rest.length);
         const order = rest.map((_, i) => i).sort(() => Math.random() - 0.5);
         const roles = rest.map(() => 'shooter');
         order.slice(0, melee).forEach(i => { roles[i] = 'chaser'; });
