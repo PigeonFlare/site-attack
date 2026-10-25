@@ -558,6 +558,7 @@ font: 12px/1.45 Tahoma, Verdana, sans-serif; color: #111; background: #fff; bord
     const rectOf = el => { let r = rects.get(el); if (!r) { r = el.getBoundingClientRect(); rects.set(el, r); } return r; };
     const inView = r => r.left >= -2 && r.top >= -2 && r.right <= vw + 2 && r.bottom <= vh + 2;
     const RICH = 'img, svg, picture, button, input, select, textarea, [role="button"]';
+    const visFrac = r => Math.max(0, Math.min(r.right, vw) - Math.max(r.left, 0)) * Math.max(0, Math.min(r.bottom, vh) - Math.max(r.top, 0)) / Math.max(1, r.width * r.height);
     function isList(p) {
       if (lists.has(p)) return lists.get(p);
       const kids = p.shadowRoot ? renderedChildren(p).filter(n => n.nodeType === 1) : [...p.children];
@@ -565,7 +566,7 @@ font: 12px/1.45 Tahoma, Verdana, sans-serif; color: #111; background: #fff; bord
       let list = false;
       for (const k of kids) {
         const r = rectOf(k);
-        if (r.width < 40 || r.height < 18 || r.width * r.height < 1200) continue;
+        if (r.width < 140 || r.height < 30) continue;
         const sig = k.localName + '|' + (k.getAttribute('class') || '');
         const n = (seen.get(sig) || 0) + 1;
         seen.set(sig, n);
@@ -574,14 +575,16 @@ font: 12px/1.45 Tahoma, Verdana, sans-serif; color: #111; background: #fff; bord
       lists.set(p, list);
       return list;
     }
+    function fits(p, r) {
+      if (r.width * r.height > area * 0.2 || r.height > vh * 0.6 || (r.width > vw * 0.7 && r.height > 110 && !isSearchBar(p))) return false;
+      if (visFrac(r) < 0.35) return false;
+      const cs = getComputedStyle(p);
+      return !(cs.position === 'fixed' && r.width * r.height > area * 0.1);
+    }
     function unitOf(leaf) {
       let cur = leaf;
       for (let p = upEl(cur); p && p !== document.body && p !== document.documentElement; p = upEl(p)) {
-        const r = rectOf(p);
-        if (!inView(r) || r.width * r.height > area * 0.12 || r.height > vh * 0.34 || (r.width > vw * 0.62 && !isSearchBar(p))) break;
-        if (isList(p) || p.querySelector('iframe, video, canvas, embed, object') || p.getElementsByTagName('*').length > 300) break;
-        const cs = getComputedStyle(p);
-        if (cs.position === 'fixed' && r.width * r.height > area * 0.06) break;
+        if (!fits(p, rectOf(p)) || isList(p) || p.getElementsByTagName('*').length > 1500) break;
         cur = p;
       }
       return cur;
@@ -609,10 +612,10 @@ font: 12px/1.45 Tahoma, Verdana, sans-serif; color: #111; background: #fff; bord
     const out = [], outSet = new Set(), anc = new Set();
     const clash = el => { if (anc.has(el)) return true; for (let p = el; p; p = upEl(p)) if (outSet.has(p)) return true; return false; };
     for (const { el, r } of cands) {
-      if (r.width * r.height > area * 0.12 && !isSearchBar(el)) continue;
       if (clash(el)) continue;
+      if (r.width * r.height < 4000 || r.height < 26 || r.width < 40) continue;
       const rich = el.matches(RICH) || el.querySelector(RICH) || (el.shadowRoot && el.shadowRoot.querySelector(RICH)) || looksLikeBox(getComputedStyle(el));
-      if (!rich && (r.height < 30 || r.width * r.height < 5000)) continue;
+      if (!rich && r.width * r.height < 6000) continue;
       out.push(el);
       outSet.add(el);
       for (let p = upEl(el); p; p = upEl(p)) anc.add(p);
@@ -706,6 +709,7 @@ font: 12px/1.45 Tahoma, Verdana, sans-serif; color: #111; background: #fff; bord
     }
     if (tag === 'img' && src.currentSrc) dst.setAttribute('src', src.currentSrc);
     for (const k of renderedChildren(src)) {
+      if (k.nodeType === 1 && getComputedStyle(k).display === 'none') continue;
       const c = cloneTree(k, budget, cs);
       if (c) dst.appendChild(c);
       if (budget.n <= 0) break;
@@ -722,7 +726,7 @@ font: 12px/1.45 Tahoma, Verdana, sans-serif; color: #111; background: #fff; bord
     const r = el.getBoundingClientRect();
     let c;
     try {
-      c = cloneTree(el, { n: 400 });
+      c = cloneTree(el, { n: 1500 });
     } catch {}
     if (!c || c.nodeType !== 1) {
       c = document.createElement('div');
