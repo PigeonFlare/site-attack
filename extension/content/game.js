@@ -303,6 +303,8 @@ font: 12px/1.45 Tahoma, Verdana, sans-serif; color: #111; background: #fff; bord
   let paused = false;
   let enemies = [], bullets = [], powerups = [], particles = [], floaters = [];
   let spawnQueue = [], spawnTimer = 0, waveInfo = null, countdown = 0, firstHalf = [];
+  let reserve = [], rescans = 0, rescanT = 0;
+  const MAX_RESCANS = 12;
   let shake = 0, flashRed = 0, flashes = [], rings = [], hitStop = 0, whiteFlash = 0, fxT = 0;
   let idleHintT = 0;
   let weapon = 'shoot';
@@ -437,7 +439,7 @@ font: 12px/1.45 Tahoma, Verdana, sans-serif; color: #111; background: #fff; bord
 
   let lastBadge = '';
   function updateBadge() {
-    const n = enemies.filter(e => e.kind !== 'necessary').length + spawnQueue.filter(s => s.kind !== 'necessary').length + firstHalf.filter(s => s.kind !== 'necessary').length;
+    const n = enemies.filter(e => e.kind !== 'necessary').length + reserve.length + spawnQueue.filter(s => s.kind !== 'necessary').length + firstHalf.filter(s => s.kind !== 'necessary').length;
     const text = state === 'dead' || !running ? '' : String(n);
     if (text === lastBadge) return;
     lastBadge = text;
@@ -529,42 +531,78 @@ font: 12px/1.45 Tahoma, Verdana, sans-serif; color: #111; background: #fff; bord
     return out.slice(0, 60);
   }
 
+  const upEl = el => el.parentElement || (el.parentNode && el.parentNode.host) || null;
+
+  function deepElements() {
+    const out = [];
+    const walk = root => {
+      for (const el of root.querySelectorAll('*')) {
+        if (el === host) continue;
+        out.push(el);
+        if (el.shadowRoot) walk(el.shadowRoot);
+      }
+    };
+    if (document.body) walk(document.body);
+    return out;
+  }
+
+  function hasOwnText(el) {
+    for (const n of el.childNodes) if (n.nodeType === 3 && n.data.trim()) return true;
+    return false;
+  }
+
+  const ENEMY_SEL = CONTROL_SEL + ',' + MEDIA_SEL + ',' + BOX_SEL;
+
   function detectEnemyElements() {
     const vw = window.innerWidth, vh = window.innerHeight, area = vw * vh;
     let cands = [];
-    const all = document.body ? document.body.querySelectorAll(CONTROL_SEL + ',' + MEDIA_SEL + ',' + BOX_SEL) : [];
-    for (const el of all) {
-      if (cands.length > 2000) break;
-      if (el === host || host.contains(el)) continue;
+    for (const el of deepElements()) {
+      if (cands.length > 4000) break;
+      if (SKIP_TAGS.has(el.localName) && !el.matches('iframe, canvas, video')) continue;
       const r = el.getBoundingClientRect();
-      if (r.width < 16 || r.height < 12) continue;
-      if (r.left < 0 || r.top < 0 || r.right > vw || r.bottom > vh) continue;
-      if (r.width * r.height > area * 0.06 || r.height > vh / 4 || (r.width > vw / 3 && !isSearchBar(el))) continue;
+      if (r.width < 8 || r.height < 10) continue;
+      if (r.left < -2 || r.top < -2 || r.right > vw + 2 || r.bottom > vh + 2) continue;
+      const text = hasOwnText(el);
+      if (!text && (r.width < 16 || r.height < 12)) continue;
+      const wide = r.width > vw / 3 && !isSearchBar(el) && !(text && r.width < vw * 0.7 && r.height < 90);
+      if (r.width * r.height > area * 0.06 || r.height > vh / 4 || wide) continue;
+      const known = el.matches(ENEMY_SEL);
+      if (!known && !text && !el.shadowRoot) continue;
       const cs = getComputedStyle(el);
-      if (cs.visibility !== 'visible' || parseFloat(cs.opacity) < 0.1 || cs.display === 'none' || cs.position === 'fixed') continue;
-      const isControl = el.matches(CONTROL_SEL);
+      if (cs.visibility !== 'visible' || parseFloat(cs.opacity) < 0.1 || cs.display === 'none' || cs.display === 'contents') continue;
+      const isControl = known && el.matches(CONTROL_SEL);
       const isLink = el.tagName === 'A' && (el.textContent.trim() || el.querySelector('img, svg'));
       const isMedia = el.matches('img, svg, picture');
       if (el.matches('iframe, video, canvas, embed, object')) continue;
-      if (!isControl && !isLink && !isMedia && !looksLikeBox(cs)) continue;
+      if (!isControl && !isLink && !isMedia && !text && !looksLikeBox(cs)) continue;
       if (el.getElementsByTagName('*').length > 150 || el.querySelector('iframe, video, canvas')) continue;
       cands.push({ el, r });
     }
     cands.sort((a, b) => b.r.width * b.r.height - a.r.width * a.r.height);
-    const desc = descendantsMap(cands);
+    const set = new Set(cands.map(c => c.el)), desc = new Map();
+    for (const c of cands) {
+      for (let p = upEl(c.el); p; p = upEl(p)) {
+        if (!set.has(p)) continue;
+        desc.set(p, (desc.get(p) || 0) + 1);
+      }
+    }
     const keep = [], kept = new Set();
     for (const c of cands) {
       let covered = false;
-      for (let p = c.el.parentElement; p && !covered; p = p.parentElement) covered = kept.has(p);
-      if (covered || (desc.get(c.el) || []).length > 3) continue;
+      for (let p = upEl(c.el); p && !covered; p = upEl(p)) covered = kept.has(p);
+      if (covered || (desc.get(c.el) || 0) > 3) continue;
       kept.add(c.el);
       keep.push(c);
     }
-    const out = [];
+    const out = [], outSet = new Set(), anc = new Set();
+    const clash = el => { if (anc.has(el)) return true; for (let p = el; p; p = upEl(p)) if (outSet.has(p)) return true; return false; };
     for (const c of keep) {
-      const el = promoteToBox(c.el, c.r, vw, vh);
-      if (out.some(o => o === el || o.contains(el) || el.contains(o))) continue;
+      let el = promoteToBox(c.el, c.r, vw, vh);
+      if (clash(el)) el = c.el;
+      if (clash(el)) continue;
       out.push(el);
+      outSet.add(el);
+      for (let p = upEl(el); p; p = upEl(p)) anc.add(p);
     }
     for (let i = out.length - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0; [out[i], out[j]] = [out[j], out[i]]; }
     return out;
@@ -942,7 +980,7 @@ font: 12px/1.45 Tahoma, Verdana, sans-serif; color: #111; background: #fff; bord
   }
 
   function clearField() {
-    enemies = []; bullets = []; powerups = []; particles = []; floaters = []; spawnQueue = []; firstHalf = []; countdown = 0; flashes = []; rings = []; hitStop = 0; whiteFlash = 0;
+    enemies = []; bullets = []; powerups = []; particles = []; floaters = []; spawnQueue = []; firstHalf = []; reserve = []; countdown = 0; flashes = []; rings = []; hitStop = 0; whiteFlash = 0;
     slashes = []; ghosts = []; lasers = [];
     restoreElements();
     restoreObstacles();
@@ -966,7 +1004,11 @@ font: 12px/1.45 Tahoma, Verdana, sans-serif; color: #111; background: #fff; bord
     if (mode === 'elements') {
       restoreElements();
       enemies = [];
-      firstHalf = elementSpecs.filter(sp => sp.el.isConnected).map(sp => ({ ...sp }));
+      const specs = elementSpecs.filter(sp => sp.el.isConnected).map(sp => ({ ...sp }));
+      firstHalf = specs.slice(0, DIFF_MAX[difficulty]);
+      reserve = specs.slice(DIFF_MAX[difficulty]);
+      rescans = difficulty === 'hard' ? 0 : MAX_RESCANS;
+      rescanT = 0;
       spawnQueue = [];
       countdown = 3;
       fireTokens = 1;
@@ -1060,15 +1102,35 @@ font: 12px/1.45 Tahoma, Verdana, sans-serif; color: #111; background: #fff; bord
     SND.dead();
     setTimeout(() => {
       if (!running) return;
-      showPanel('Aw, Snap!', mode === 'elements' ? `The page won. ${enemies.filter(e => !e.dead).length} elements were still standing. Score ${score.toLocaleString()}.` : `Too many cookies got through. You reached wave ${wave} with ${score.toLocaleString()} points.`, [
+      showPanel('Aw, Snap!', mode === 'elements' ? `The page won. ${enemies.filter(e => !e.dead).length + reserve.length} elements were still standing. Score ${score.toLocaleString()}.` : `Too many cookies got through. You reached wave ${wave} with ${score.toLocaleString()} points.`, [
         { label: 'Try again', primary: true, onClick: () => { resetGame(); startWave(); } },
         { label: 'End attack', onClick: end }
       ], '', true);
     }, 900);
   }
 
+  function reinforce(dt) {
+    const cap = DIFF_MAX[difficulty];
+    let alive = enemies.filter(e => !e.dead).length;
+    for (let n = 0; n < 2 && reserve.length && alive < cap; n++, alive++) {
+      const sp = reserve.shift();
+      if (!sp.el.isConnected || moved.has(sp.el)) { n--; alive--; continue; }
+      spawn({ ...sp, quiet: true });
+      updateBadge();
+    }
+    rescanT -= dt;
+    if (reserve.length || rescans >= MAX_RESCANS || rescanT > 0 || (alive > cap / 2 && alive > 0)) return;
+    rescans++;
+    rescanT = 1.5;
+    const fresh = detectEnemyElements().filter(el => !moved.has(el));
+    if (!fresh.length) { rescans = MAX_RESCANS; return; }
+    const melee = Math.max(1, Math.round(fresh.length * 0.1));
+    reserve = fresh.map((el, i) => ({ el, kind: i < melee ? 'chaser' : 'shooter', count: cap }));
+    updateBadge();
+  }
+
   function spawnElement(spec) {
-    const el = spec.el, r = el.getBoundingClientRect();
+    const el = spec.el, r = spec.r || el.getBoundingClientRect();
     const nerf = spec.kind === 'boss' ? Math.max(1, spec.count / 8) : 1;
     const hw = r.width / 2, hh = r.height / 2;
     const boss = spec.kind === 'boss';
@@ -1314,6 +1376,7 @@ font: 12px/1.45 Tahoma, Verdana, sans-serif; color: #111; background: #fff; bord
         countdown -= dt;
         if (countdown <= 0) {
           countdown = 0;
+          if (mode === 'elements') firstHalf.forEach(sp => { sp.r = sp.el.getBoundingClientRect(); });
           firstHalf.forEach(sp => { const e = spawn({ ...sp, quiet: true }); if (e) e.group = 1; });
           firstHalf = [];
           SND.wave();
@@ -1326,6 +1389,7 @@ font: 12px/1.45 Tahoma, Verdana, sans-serif; color: #111; background: #fff; bord
         floaters.push({ x: W / 2, y: H * 0.35, text: 'SECOND WAVE', color: '#b71c1c', life: 1.6, max: 1.6, big: true });
         updateBadge();
       }
+      if (mode === 'elements' && countdown <= 0) reinforce(dt);
       updateNav(dt);
       updateEnemies(dt);
     }
@@ -1333,7 +1397,7 @@ font: 12px/1.45 Tahoma, Verdana, sans-serif; color: #111; background: #fff; bord
     updateBullets(dt);
     updatePowerups(dt);
 
-    if (state === 'wave' && countdown <= 0 && !spawnQueue.length && !enemies.some(e => e.kind !== 'necessary')) {
+    if (state === 'wave' && countdown <= 0 && !spawnQueue.length && !reserve.length && rescans >= MAX_RESCANS && !enemies.some(e => e.kind !== 'necessary')) {
       waveCleared();
     }
   }
@@ -2453,7 +2517,8 @@ font: 12px/1.45 Tahoma, Verdana, sans-serif; color: #111; background: #fff; bord
     if (document.body) document.body.style.overflow = 'hidden';
     elementSpecs = [];
     if (mode === 'elements') {
-      const els = detectEnemyElements().slice(0, DIFF_MAX[difficulty]);
+      const found = detectEnemyElements();
+      const els = difficulty === 'hard' ? found : found.slice(0, DIFF_MAX[difficulty]);
       if (els.length) {
         let bossEl = null;
         bossEl = els.reduce((a, b) => { const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect(); return rb.width * rb.height > ra.width * ra.height ? b : a; });
@@ -2463,7 +2528,10 @@ font: 12px/1.45 Tahoma, Verdana, sans-serif; color: #111; background: #fff; bord
         const roles = rest.map(() => 'shooter');
         order.slice(0, melee).forEach(i => { roles[i] = 'chaser'; });
         const shooters = roles.filter(k => k === 'shooter').length;
-        elementSpecs = els.map(el => ({ el, kind: el === bossEl ? 'boss' : roles[rest.indexOf(el)], count: els.length, shooters }));
+        const cap = DIFF_MAX[difficulty], at = new Map(rest.map((el, i) => [el, i]));
+        elementSpecs = els.map(el => ({ el, kind: el === bossEl ? 'boss' : roles[at.get(el)], count: Math.min(els.length, cap), shooters }));
+        const bi = elementSpecs.findIndex(sp => sp.kind === 'boss');
+        if (bi >= cap) elementSpecs.unshift(elementSpecs.splice(bi, 1)[0]);
       } else {
         mode = 'cookies';
       }
