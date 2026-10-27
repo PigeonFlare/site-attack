@@ -558,6 +558,32 @@ font: 12px/1.45 Tahoma, Verdana, sans-serif; color: #111; background: #fff; bord
     const rectOf = el => { let r = rects.get(el); if (!r) { r = el.getBoundingClientRect(); rects.set(el, r); } return r; };
     const inView = r => r.left >= -2 && r.top >= -2 && r.right <= vw + 2 && r.bottom <= vh + 2;
     const RICH = 'img, svg, picture, button, input, select, textarea, [role="button"]';
+    const bgs = new Map();
+    const pageBg = (() => {
+      for (const el of [document.body, document.documentElement]) {
+        const c = el && getComputedStyle(el).backgroundColor;
+        if (c && visibleAlpha(c) > 0.5) return hexRgb(c);
+      }
+      return [255, 255, 255];
+    })();
+    function backdrop(el) {
+      if (!el) return pageBg;
+      if (bgs.has(el)) return bgs.get(el);
+      const cs = getComputedStyle(el);
+      const b = visibleAlpha(cs.backgroundColor) > 0.5 ? hexRgb(cs.backgroundColor) : backdrop(upEl(el));
+      bgs.set(el, b);
+      return b;
+    }
+    const differs = (c, bg, min) => !/rgba?\(/.test(c) ? !!c && c !== 'transparent' : visibleAlpha(c) > 0.15 && Math.max(...hexRgb(c).map((v, i) => Math.abs(v - bg[i]))) > min;
+    function visibleBox(el, cs) {
+      const bg = backdrop(upEl(el));
+      if (cs.backgroundImage && cs.backgroundImage !== 'none') return true;
+      if (differs(cs.backgroundColor, bg, 22)) return true;
+      const sides = ['Top', 'Right', 'Bottom', 'Left'].filter(sd => parseFloat(cs['border' + sd + 'Width']) > 0 && cs['border' + sd + 'Style'] !== 'none' && differs(cs['border' + sd + 'Color'], bg, 22)).length;
+      return sides >= 3;
+    }
+    const minArea = Math.max(4000, area * 0.005), minW = Math.max(40, vw * 0.03), minH = Math.max(24, vh * 0.03);
+    const small = r => r.width * r.height < minArea || r.width < minW || r.height < minH;
     const visFrac = r => Math.max(0, Math.min(r.right, vw) - Math.max(r.left, 0)) * Math.max(0, Math.min(r.bottom, vh) - Math.max(r.top, 0)) / Math.max(1, r.width * r.height);
     function isList(p) {
       if (lists.has(p)) return lists.get(p);
@@ -584,7 +610,7 @@ font: 12px/1.45 Tahoma, Verdana, sans-serif; color: #111; background: #fff; bord
     function unitOf(leaf) {
       let cur = leaf;
       for (let p = upEl(cur); p && p !== document.body && p !== document.documentElement; p = upEl(p)) {
-        if (!fits(p, rectOf(p)) || isList(p) || p.getElementsByTagName('*').length > 1500) break;
+        if (!fits(p, rectOf(p)) || (isList(p) && !small(rectOf(cur))) || p.getElementsByTagName('*').length > 1500) break;
         cur = p;
       }
       return cur;
@@ -603,7 +629,9 @@ font: 12px/1.45 Tahoma, Verdana, sans-serif; color: #111; background: #fff; bord
       if (r.width < 8 || r.height < 8 || !inView(r)) continue;
       const cs = getComputedStyle(el);
       if (cs.visibility !== 'visible' || parseFloat(cs.opacity) < 0.1 || cs.display === 'none') continue;
-      if (!media && !control && !text && (r.width < 16 || r.height < 12 || !looksLikeBox(cs))) continue;
+      if (!media && !control && !text && (r.width < 16 || r.height < 12 || !visibleBox(el, cs))) continue;
+      if (text && !differs(cs.color, backdrop(el), 40)) continue;
+      if (control && !text && !el.childElementCount && !visibleBox(el, cs)) continue;
       leaves++;
       const u = unitOf(el);
       if (!units.has(u)) units.set(u, rectOf(u));
@@ -611,15 +639,23 @@ font: 12px/1.45 Tahoma, Verdana, sans-serif; color: #111; background: #fff; bord
     const cands = [...units].map(([el, r]) => ({ el, r })).sort((a, b) => b.r.width * b.r.height - a.r.width * a.r.height);
     const out = [], outSet = new Set(), anc = new Set();
     const clash = el => { if (anc.has(el)) return true; for (let p = el; p; p = upEl(p)) if (outSet.has(p)) return true; return false; };
+    const smalls = [];
     for (const { el, r } of cands) {
       if (clash(el)) continue;
-      if (r.width * r.height < 4000 || r.height < 26 || r.width < 40) continue;
-      const rich = el.matches(RICH) || el.querySelector(RICH) || (el.shadowRoot && el.shadowRoot.querySelector(RICH)) || looksLikeBox(getComputedStyle(el));
+      if (small(r)) {
+        if (r.width < 8 || r.height < 8 || smalls.length > 600) continue;
+        smalls.push({ el, r });
+        outSet.add(el);
+        for (let p = upEl(el); p; p = upEl(p)) anc.add(p);
+        continue;
+      }
+      const rich = el.matches(RICH) || el.querySelector(RICH) || (el.shadowRoot && el.shadowRoot.querySelector(RICH)) || visibleBox(el, getComputedStyle(el));
       if (!rich && r.width * r.height < 6000) continue;
       out.push(el);
       outSet.add(el);
       for (let p = upEl(el); p; p = upEl(p)) anc.add(p);
     }
+    out.push(...groupSmall(smalls, vw, vh, small));
     for (let i = out.length - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0; [out[i], out[j]] = [out[j], out[i]]; }
     return out;
   }
@@ -638,6 +674,7 @@ font: 12px/1.45 Tahoma, Verdana, sans-serif; color: #111; background: #fff; bord
 
   const STYLE_PROPS = 'display top right bottom left width height min-width min-height max-width max-height box-sizing margin-top margin-right margin-bottom margin-left padding-top padding-right padding-bottom padding-left border-top-width border-right-width border-bottom-width border-left-width border-top-style border-right-style border-bottom-style border-left-style border-top-color border-right-color border-bottom-color border-left-color border-top-left-radius border-top-right-radius border-bottom-right-radius border-bottom-left-radius border-collapse border-spacing background-color background-image background-size background-position background-repeat background-clip background-origin color font-family font-size font-weight font-style font-variant line-height letter-spacing word-spacing text-align text-indent text-transform text-decoration-line text-decoration-color text-decoration-style text-overflow text-shadow white-space word-break overflow-wrap overflow-x overflow-y opacity box-shadow transform transform-origin vertical-align float clear position z-index visibility flex-direction flex-wrap justify-content align-items align-content align-self flex-grow flex-shrink flex-basis order row-gap column-gap grid-template-columns grid-template-rows grid-template-areas grid-auto-flow grid-auto-columns grid-auto-rows grid-column-start grid-column-end grid-row-start grid-row-end object-fit object-position aspect-ratio list-style-type list-style-position filter clip-path direction writing-mode table-layout -webkit-line-clamp -webkit-box-orient fill stroke stroke-width outline-style outline-width outline-color outline-offset'.split(' ');
   const styleDefaults = new Map();
+  const ALWAYS_COPY = new Set(['border-top-width', 'border-right-width', 'border-bottom-width', 'border-left-width', 'outline-width']);
 
   function defaultsFor(dst) {
     const key = dst.localName + '|' + (dst.getAttribute('type') || '') + '|' + dst.hasAttribute('href');
@@ -661,7 +698,7 @@ font: 12px/1.45 Tahoma, Verdana, sans-serif; color: #111; background: #fff; bord
     const d = cloneLayer ? defaultsFor(dst) : null;
     for (const prop of STYLE_PROPS) {
       const v = cs.getPropertyValue(prop);
-      if (d && v === d.get(prop) && (!parentCs || parentCs.getPropertyValue(prop) === v)) continue;
+      if (d && v === d.get(prop) && !ALWAYS_COPY.has(prop) && (!parentCs || parentCs.getPropertyValue(prop) === v)) continue;
       st.setProperty(prop, v);
     }
     return cs;
@@ -725,9 +762,32 @@ font: 12px/1.45 Tahoma, Verdana, sans-serif; color: #111; background: #fff; bord
     }
     const r = el.getBoundingClientRect();
     let c;
-    try {
-      c = cloneTree(el, { n: 1500 });
-    } catch {}
+    if (el.members) {
+      c = document.createElement('div');
+      c.style.cssText = 'all:initial;display:block;overflow:visible;';
+      for (const m of el.members) {
+        if (!m.isConnected) continue;
+        const mr = m.getBoundingClientRect();
+        let mc;
+        try { mc = cloneTree(m, { n: 400 }); } catch {}
+        if (!mc || mc.nodeType !== 1) continue;
+        const ms = mc.style;
+        ms.setProperty('position', 'absolute');
+        ms.setProperty('left', (mr.left - r.left) + 'px');
+        ms.setProperty('top', (mr.top - r.top) + 'px');
+        ms.setProperty('width', mr.width + 'px');
+        ms.setProperty('height', mr.height + 'px');
+        ms.setProperty('box-sizing', 'border-box');
+        ms.setProperty('margin', '0');
+        ms.setProperty('transform', 'none');
+        ms.setProperty('visibility', 'visible');
+        c.appendChild(mc);
+      }
+    } else {
+      try {
+        c = cloneTree(el, { n: 1500 });
+      } catch {}
+    }
     if (!c || c.nodeType !== 1) {
       c = document.createElement('div');
       try { copyStyles(el, c); } catch {}
@@ -750,6 +810,72 @@ font: 12px/1.45 Tahoma, Verdana, sans-serif; color: #111; background: #fff; bord
     return c;
   }
 
+  const isMoved = el => (el.members || [el]).some(m => moved.has(m));
+
+  function elementGroup(members) {
+    return {
+      members, localName: 'div', tagName: 'DIV', textContent: '',
+      getAttribute: () => null,
+      get isConnected() { return members.some(m => m.isConnected); },
+      getBoundingClientRect() {
+        let l = Infinity, t = Infinity, rr = -Infinity, b = -Infinity;
+        for (const m of members) { if (!m.isConnected) continue; const q = m.getBoundingClientRect(); l = Math.min(l, q.left); t = Math.min(t, q.top); rr = Math.max(rr, q.right); b = Math.max(b, q.bottom); }
+        return l === Infinity ? new DOMRect() : new DOMRect(l, t, rr - l, b - t);
+      }
+    };
+  }
+
+  function groupSmall(smalls, vw, vh, small) {
+    const gap = Math.max(16, vw * 0.015), tW = Math.max(200, vw * 0.14), tH = Math.max(120, vh * 0.14);
+    const used = new Set(), groups = [];
+    const pass = (horizontal) => {
+      const order = smalls.filter(u => !used.has(u)).sort((a, b) => horizontal ? a.r.top - b.r.top || a.r.left - b.r.left : a.r.left - b.r.left || a.r.top - b.r.top);
+      for (const u of order) {
+        if (used.has(u)) continue;
+        const g = [u];
+        let L = u.r.left, T = u.r.top, R = u.r.right, B = u.r.bottom;
+        for (;;) {
+          if (horizontal ? R - L >= tW : B - T >= tH) break;
+          let best = null, bd = Infinity;
+          for (const v of order) {
+            if (used.has(v) || g.includes(v)) continue;
+            if (horizontal) {
+              const d = v.r.left - R, ov = Math.min(B, v.r.bottom) - Math.max(T, v.r.top);
+              if (d < -4 || d > gap || ov < Math.min(B - T, v.r.height) * 0.5) continue;
+              if (d < bd) { bd = d; best = v; }
+            } else {
+              const d = v.r.top - B, ov = Math.min(R, v.r.right) - Math.max(L, v.r.left);
+              if (d < -4 || d > gap || ov < Math.min(R - L, v.r.width) * 0.5) continue;
+              if (d < bd) { bd = d; best = v; }
+            }
+          }
+          if (!best) break;
+          g.push(best);
+          L = Math.min(L, best.r.left); T = Math.min(T, best.r.top); R = Math.max(R, best.r.right); B = Math.max(B, best.r.bottom);
+        }
+        if (g.length > 1 && !small(new DOMRect(L, T, R - L, B - T))) {
+          g.forEach(x => used.add(x));
+          groups.push({ g, L, T, R, B });
+        }
+      }
+    };
+    pass(true);
+    pass(false);
+    for (const u of smalls) {
+      if (used.has(u)) continue;
+      let best = null, bd = gap;
+      for (const q of groups) {
+        const dx = Math.max(q.L - u.r.right, u.r.left - q.R, 0), dy = Math.max(q.T - u.r.bottom, u.r.top - q.B, 0);
+        const d = Math.max(dx, dy);
+        if (d <= bd) { bd = d; best = q; }
+      }
+      if (!best) continue;
+      best.g.push(u);
+      best.L = Math.min(best.L, u.r.left); best.T = Math.min(best.T, u.r.top); best.R = Math.max(best.R, u.r.right); best.B = Math.max(best.B, u.r.bottom);
+    }
+    return groups.map(q => elementGroup(q.g.map(x => x.el)));
+  }
+
   function moveElement(e) {
     const el = e.el;
     if (!e.clone) {
@@ -761,9 +887,11 @@ font: 12px/1.45 Tahoma, Verdana, sans-serif; color: #111; background: #fff; bord
         clonesThisFrame++;
         e.clone = makeClone(el);
       }
-      if (!moved.has(el)) moved.set(el, { visibility: [el.style.getPropertyValue('visibility'), el.style.getPropertyPriority('visibility')], clones: [] });
-      moved.get(el).clones.push(e.clone);
-      el.style.setProperty('visibility', 'hidden', 'important');
+      for (const m of el.members || [el]) {
+        if (!moved.has(m)) moved.set(m, { visibility: [m.style.getPropertyValue('visibility'), m.style.getPropertyPriority('visibility')], clones: [] });
+        moved.get(m).clones.push(e.clone);
+        m.style.setProperty('visibility', 'hidden', 'important');
+      }
     }
     let dx = e.x - e.homeX, dy = e.y - e.homeY;
     if (e.hitFlash > 0) { dx += rand(-3, 3); dy += rand(-3, 3); }
@@ -1132,7 +1260,7 @@ font: 12px/1.45 Tahoma, Verdana, sans-serif; color: #111; background: #fff; bord
     let alive = enemies.filter(e => !e.dead).length;
     for (let n = 0; n < 6 && reserve.length && alive < cap; n++, alive++) {
       const sp = reserve.shift();
-      if (!sp.el.isConnected || moved.has(sp.el)) { n--; alive--; continue; }
+      if (!sp.el.isConnected || isMoved(sp.el)) { n--; alive--; continue; }
       spawn({ ...sp, quiet: true });
       updateBadge();
     }
@@ -1140,7 +1268,7 @@ font: 12px/1.45 Tahoma, Verdana, sans-serif; color: #111; background: #fff; bord
     if (reserve.length || rescans >= MAX_RESCANS || rescanT > 0 || (alive > cap / 2 && alive > 0)) return;
     rescans++;
     rescanT = 1.5;
-    const fresh = detectEnemyElements().filter(el => !moved.has(el));
+    const fresh = detectEnemyElements().filter(el => !isMoved(el));
     if (!fresh.length) { rescans = MAX_RESCANS; return; }
     const melee = Math.max(1, Math.round(fresh.length * 0.1));
     reserve = fresh.map((el, i) => ({ el, kind: i < melee ? 'chaser' : 'shooter', count: cap }));
@@ -2537,6 +2665,10 @@ font: 12px/1.45 Tahoma, Verdana, sans-serif; color: #111; background: #fff; bord
     elementSpecs = [];
     if (mode === 'elements') {
       const found = detectEnemyElements();
+      if (difficulty === 'hard' && found.length > DIFF_MAX.hard) {
+        const size = el => { const r = el.getBoundingClientRect(); return r.width * r.height; };
+        found.sort((a, b) => size(b) - size(a));
+      }
       const els = difficulty === 'hard' ? found : found.slice(0, DIFF_MAX[difficulty]);
       if (els.length) {
         let bossEl = null;
